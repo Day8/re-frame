@@ -1,10 +1,12 @@
 (ns re-frame.interceptor-test
   (:require [cljs.test :refer-macros [is deftest testing]]
             [reagent.ratom :refer [atom]]
-            [re-frame.interceptor :refer [context get-coeffect assoc-effect assoc-coeffect get-effect update-coeffect]]
+            [re-frame.interceptor :refer [context get-coeffect assoc-effect assoc-coeffect get-effect
+                                          update-coeffect ->interceptor]]
             [re-frame.std-interceptors :refer [debug trim-v path enrich after on-changes
                                                db-handler->interceptor fx-handler->interceptor]]
-            [re-frame.interceptor :as interceptor]))
+            [re-frame.interceptor :as interceptor]
+            [re-frame.registrar :as registrar]))
 
 (enable-console-print!)
 
@@ -185,3 +187,94 @@
     (is (= {:effects {:db {:a 1}}
             :coeffects {:db {:a 2}}}
          (update-coeffect context :db update :a inc)))))
+
+(deftest test-exception->ex-info
+  (let [exception->ex-info #'re-frame.interceptor/exception->ex-info ; ref to the private fn
+        e (js/Error. "Ooops!")
+        interceptor {:id :some-interceptor :before identity}
+        result (exception->ex-info e interceptor :after)]
+    (is (= {:direction :after
+            :interceptor :some-interceptor}
+           (ex-data result)))
+    (is (= e (ex-cause result)))
+    (is (= "Interceptor Exception: Ooops!" (ex-message result)))))
+
+(deftest test-invoke-interceptor-fn
+  (let [invoke-interceptor-fn #'re-frame.interceptor/invoke-interceptor-fn ; ref to the private fn
+        context {:a 1}
+        interceptor {:before #(update % :a inc)}]
+
+    (testing "returns context when there's no direction fn for the interceptor"
+      (is (= {:a 1}
+             (invoke-interceptor-fn context interceptor :after))))
+
+    (testing "returns result of applying direction fn to context"
+      (is (= {:a 2}
+             (invoke-interceptor-fn context interceptor :before))))
+
+    (testing "throws original exception to flow when there is no error handler"
+      (is (nil? (registrar/get-handler :error :event-handler)) "no error-handler was registered")
+      (let [exception (ex-info "Oopsie" {:foo :bar})
+            interceptor {:id :throws
+                         :before #(throw exception)}
+            context {:a 1}]
+        (try
+          (invoke-interceptor-fn context interceptor :before)
+          (is false "interceptor should have thrown")
+          (catch :default e
+            (is (= exception e))
+            (is (= "Oopsie" (ex-message e)))
+            (is (= {:foo :bar} (ex-data e)))))))
+
+    (testing "throws via exception->ex-info when there's an error handler"
+      ;; actual handler doesn't matter here, we just need a registered handler so invoke-exception
+      (registrar/register-handler :error :event-handler identity)
+      (try
+        (let [exception (ex-info "Oopsie" {:foo :bar})
+              interceptor {:id :throws
+                           :before #(throw exception)}
+              context {:a 1}]
+          (try
+            (invoke-interceptor-fn context interceptor :before)
+            (is false "interceptor should have thrown")
+            (catch :default e
+              (is (not= exception e))
+              (is (= "Interceptor Exception: Oopsie" (ex-message e)))
+              (is (= exception (ex-cause e)))
+              (is (= {:direction :before
+                      :interceptor :throws}
+                     (ex-data e))))))
+        (finally
+          (registrar/clear-handlers :error))))))
+
+(deftest test-exceptions
+  (let [error-atom (atom nil)
+        error-handler (fn [e]
+                        (reset! error-atom e))
+        exception (js/Error "Thrown from interceptor")
+        throws-before (->interceptor :id :throws-before
+                                     :before (fn [_] (throw exception)))
+        interceptors [throws-before]]
+
+    (testing "an exception in an interceptor, without error handler"
+      (is (nil? (registrar/get-handler :error)))
+      (try
+        (interceptor/execute [:_] interceptors)
+        (is false "interceptor should have thrown")
+        (catch :default e
+          (is (= "Thrown from interceptor" (ex-message e)))))
+      (is (nil? @error-atom)))
+
+    (testing "an exception in an interceptor, with error handler"
+      (registrar/register-handler :error :event-handler error-handler)
+      (try
+        (is (registrar/get-handler :error))
+        (interceptor/execute [:_] interceptors)
+        (let [error @error-atom]
+          (is (= exception (ex-cause error)))
+          (is (= {:direction :before
+                  :event-v [:_]
+                  :interceptor :throws-before}
+                 (ex-data error))))
+        (finally
+          (registrar/clear-handlers :error))))))

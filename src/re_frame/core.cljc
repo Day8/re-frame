@@ -115,6 +115,21 @@
 
 (def clear-event (partial registrar/clear-handlers events/kind)) ;; think unreg-event-*
 
+;; -- error handler ----------------------------------------------------------
+
+(defn reg-event-error-handler
+  "Register the given event error `handler` (function) that will catch unhandled exceptions
+  thrown in the interceptors/handler chain.
+  A single error handler can exist at a given time: a previously registered error handler
+  would be overwritten by the new one provided to this function.
+  The error handler receives an ExceptionInfo object with keys
+  #{:direction   ;; :before or :after
+    :interceptor ;; id of the interceptor where the original exception was thrown
+    :exception   ;; original exception
+   }"
+  [handler]
+  (registrar/register-handler :error :event-handler handler))
+
 ;; -- interceptors ------------------------------------------------------------
 
 ;; Standard interceptors.

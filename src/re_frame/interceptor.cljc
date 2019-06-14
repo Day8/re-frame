@@ -3,6 +3,7 @@
     [re-frame.loggers :refer [console]]
     [re-frame.interop :refer [empty-queue debug-enabled?]]
     [re-frame.trace :as trace :include-macros true]
+    [re-frame.registrar :as registrar]
     [clojure.set :as set]))
 
 
@@ -62,10 +63,22 @@
 ;; -- Execute Interceptor Chain  ------------------------------------------------------------------
 
 
+(defn- exception->ex-info [e interceptor direction]
+  (ex-info (str "Interceptor Exception: " #?(:clj (.getMessage e) :cljs (ex-message e)))
+           {:direction direction
+            :interceptor (:id interceptor)}
+           e))
+
+
 (defn- invoke-interceptor-fn
   [context interceptor direction]
   (if-let [f (get interceptor direction)]
-    (f context)
+    (if (registrar/get-handler :error :event-handler)
+      (try
+        (f context)
+        (catch #?(:clj Exception :cljs :default) e
+          (throw (exception->ex-info e interceptor direction))))
+      (f context))
     context))
 
 
@@ -142,6 +155,19 @@
       (dissoc :queue)
       (enqueue (:stack context))))
 
+(defn execute*
+  [event-v interceptors]
+  (trace/merge-trace!
+    {:tags {:interceptors interceptors}})
+  (-> (context event-v interceptors)
+      (invoke-interceptors :before)
+      change-direction
+      (invoke-interceptors :after)))
+
+(defn- add-error-context [e extra-data]
+  (ex-info #?(:clj (.getMessage e) :cljs (ex-message e))
+           (merge (ex-data e) extra-data)
+           #?(:clj (.getCause e) :cljs (ex-cause e))))
 
 (defn execute
   "Executes the given chain (coll) of interceptors.
@@ -193,9 +219,9 @@
    already done.  In advanced cases, these values can be modified by the
    functions through which the context is threaded."
   [event-v interceptors]
-  (trace/merge-trace!
-    {:tags {:interceptors interceptors}})
-  (-> (context event-v interceptors)
-      (invoke-interceptors :before)
-      change-direction
-      (invoke-interceptors :after)))
+  (if-let [error-handler (registrar/get-handler :error :event-handler)]
+    (try
+      (execute* event-v interceptors)
+      (catch #?(:clj Exception :cljs :default) e
+        (error-handler (add-error-context e {:event-v event-v}))))
+    (execute* event-v interceptors)))

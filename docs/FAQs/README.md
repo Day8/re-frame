@@ -10,7 +10,6 @@
 3. [Dispatched Events Are Null](Null-Dispatched-Events.md)
 4. [Why is re-frame implemented in `.cljc` files](Why-CLJC.md)
 5. [Why do we need to clear the subscription cache when reloading with Figwheel?](Why-Clear-Sub-Cache.md)
-6. [How can I detect exceptions in Event Handlers?](CatchingEventExceptions.md)
 7. [How do I store normalised data in app-db?](DB_Normalisation.md)
 8. [How do I register a global interceptor](GlobalInterceptors.md)
 9. [How do I turn on/off polling a database every 60 secs](PollADatabaseEvery60.md)
