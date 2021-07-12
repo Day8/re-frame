@@ -66,6 +66,14 @@
   {:flush-dom (fn [f] (after-render #(next-tick f)))   ;; one tick after the end of the next animation frame
    :yield     next-tick})               ;; almost immediately
 
+(defn rebuild-queue
+  [runnables queue]
+  (let [first-event          (peek runnables)
+        meta-of-first-event  (meta first-event)
+        keys-to-remove       (keys later-fns)
+        without-later-fns    (reduce #(dissoc %1 %2) keys-to-remove meta-of-first-event)
+        new-first-event      (with-meta first-event without-later-fns)]
+    (into #queue [new-first-event] (pop runnables) queue)))
 
 ;; Event Queue Abstraction
 (defprotocol IEventQueue
@@ -81,7 +89,7 @@
 
   ;; -- Finite State Machine actions
   (-add-event [this event])
-  (-process-1st-event-in-queue [this])
+  (-process-event [this])
   (-run-next-tick [this])
   (-run-queue [this])
   (-exception [this ex])
@@ -172,15 +180,10 @@
     [_ event]
     (set! queue (conj queue event)))
 
-  (-process-1st-event-in-queue
-    [this]
-    (let [event-v (peek queue)]
-      (try
-        (handle event-v)
-        (set! queue (pop queue))
-        (-call-post-event-callbacks this event-v)
-        (catch #?(:cljs :default :clj Exception) ex
-          (-fsm-trigger this :exception ex)))))
+  (-process-event
+    [this event-v]
+    (handle event-v)
+    (-call-post-event-callbacks this event-v)
 
   (-run-next-tick
     [this]
@@ -188,15 +191,27 @@
 
   ;; Process all the events currently in the queue, but not any new ones.
   ;; Be aware that events might have metadata which will pause processing.
+  ;;
+  ;; Work with a snapshot of the queue so that if an exception occurs during
+  ;; event processing the real queue has already been purged.
   (-run-queue
     [this]
-    (loop [n (count queue)]
-      (if (zero? n)
-        (-fsm-trigger this :finish-run nil)
-        (if-let [later-fn (some later-fns (-> queue peek meta keys))]  ;; any metadata which causes pausing?
-          (-fsm-trigger this :pause later-fn)
-          (do (-process-1st-event-in-queue this)
-              (recur (dec n)))))))
+    (let [runnables queue] ;; snapshot the queue
+      (purge this) ;; purge the queue
+      (try
+        (loop [runnables runnables]
+          (when-not (empty? runnables)
+            (if-let [later-fn (some later-fns (-> runnables peek meta keys))]  ;; any metadata which causes pausing?
+              (do
+                (set! queue (rebuild-queue runnables queue))
+                (-fsm-trigger this :pause later-fn))
+              (do (-process-event this (peek runnables))
+                  (recur (pop runnables))))))
+        (finally
+          ;; An exception may have occurred during event processing leaving the fsm-state in running so we ensure
+          ;; that it is always set back to :idle.
+          (if (= fsm-state :running)
+            (-fsm-trigger this :finish-run nil))))))
 
   (-exception
     [this ex]
@@ -214,9 +229,7 @@
 
   (-resume
     [this]
-    (-process-1st-event-in-queue this)  ;; do the event which paused processing
-    (-run-queue this)))                 ;; do the rest of the queued events
-
+    (-run-queue this))
 
 ;; ---------------------------------------------------------------------------
 ;; Event Queue
