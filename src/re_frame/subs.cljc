@@ -147,12 +147,30 @@
     (trace/merge-trace! {:tags {:input-signals (doall (to-seq (map-signals reagent-id signals)))}})
     dereffed-signals))
 
-
 (defn reg-sub
   [query-id & args]
-  (let [computation-fn (last args)
-        input-args     (butlast args) ;; may be empty, or one signal fn, or pairs of  :<- / vector
-        err-header     (str "re-frame: reg-sub for " query-id ", ")
+  (let [err-header       (str "re-frame: reg-sub for " query-id ", ")
+        [input-args      ;; may be empty, or one signal fn, or pairs of  :<- / vector
+         computation-fn] (let [[op f :as comp-f] (take-last 2 args)]
+                           (if (or (= 1 (count comp-f))
+                                   (fn? op)
+                                   (vector? op))
+                             [(butlast args) (last args)]
+                             (let [args (drop-last 2 args)]
+                               (case op
+                                 ;; return a function that calls the computation fn
+                                 ;;  on the input signal, removing the query vector
+                                 :->
+                                 [args (fn [db _]
+                                         (f db))]
+                                 ;; return a function that calls the computation fn
+                                 ;;  on the input signal and the data in the query vector
+                                 ;;  that is not the query-id
+                                 :=>
+                                 [args (fn [db [_ & qs]]
+                                         (apply f db qs))]
+                                 ;; an incorrect keyword was passed
+                                 (console :error err-header "expected :-> or :=> as second to last argument, got:" op)))))
         inputs-fn      (case (count input-args)
                          ;; no `inputs` function provided - give the default
                          0 (fn

@@ -254,6 +254,84 @@
     (reset! db/app-db {:a 1 :b 2})
     (is (= {:a 1 :b 2} @test-sub))))
 
+(deftest test-sub-macros-->
+  "test the syntactical sugar for input signal"
+  (subs/reg-sub
+   :a-sub
+   :-> :a)
+
+  (subs/reg-sub
+   :b-sub
+   :-> :b)
+
+  (subs/reg-sub
+   :c-sub
+   :-> :c)
+
+  (subs/reg-sub
+   :d-sub
+   :-> :d)
+
+  (subs/reg-sub
+   :d-first-sub
+   :<- [:d-sub]
+   :-> first)
+
+  ;; variant of :d-first-sub without an input parameter
+  (subs/reg-sub
+   :e-first-sub
+   :-> (comp first :e))
+
+  ;; test for equality
+  (subs/reg-sub
+   :c-foo?-sub
+   :<- [:c-sub]
+   :-> #{:foo})
+
+  (subs/reg-sub
+   :a-b-sub
+   :<- [:a-sub]
+   :<- [:b-sub]
+   :-> (partial zipmap [:a :b]))
+
+  (let [test-sub   (subs/subscribe [:a-b-sub])
+        test-sub-c (subs/subscribe [:c-foo?-sub])
+        test-sub-d (subs/subscribe [:d-first-sub])
+        test-sub-e (subs/subscribe [:e-first-sub])]
+    (is (= nil @test-sub-c))
+    (reset! db/app-db {:a 1 :b 2 :c :foo :d [1 2] :e [3 4]})
+    (is (= {:a 1 :b 2} @test-sub))
+    (is (= :foo @test-sub-c))
+    (is (= 1 @test-sub-d))
+    (is (= 3 @test-sub-e))))
+
+(deftest test-sub-macros-=>
+  "test the syntactical sugar for input signals and query vector arguments"
+  (subs/reg-sub
+   :a-sub
+   :-> :a)
+
+  (subs/reg-sub
+   :b-sub
+   :-> :b)
+
+  (subs/reg-sub
+   :test-a-sub
+   :<- [:a-sub]
+   :=> vector)
+
+  ;; test for equality of input signal and query parameter
+  (subs/reg-sub
+   :test-b-sub
+   :<- [:b-sub]
+   :=> =)
+  
+  (let [test-a-sub (subs/subscribe [:test-a-sub :c])
+        test-b-sub (subs/subscribe [:test-b-sub 2])]
+    (reset! db/app-db {:a 1 :b 2})
+    (is (= [1 :c] @test-a-sub))
+    (is (= true @test-b-sub))))
+
 (deftest test-registering-subs-doesnt-create-subscription
   (let [sub-called? (atom false)]
     (with-redefs [subs/subscribe (fn [& args] (reset! sub-called? true))]
